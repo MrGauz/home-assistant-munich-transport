@@ -21,6 +21,8 @@ from .const import (
     CONF_TYPE_SUBWAY,
     CONF_TYPE_TRAM,
     CONF_DEPARTURES_NAME,
+    CONF_DEPARTURES_DIRECTIONS,
+    CONF_DEPARTURES_LINES,
     DEFAULT_ICON,
 )
 from .departure import Departure
@@ -40,6 +42,8 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
             {
                 vol.Required(CONF_DEPARTURES_NAME): str,
                 vol.Optional(CONF_DEPARTURES_WALKING_TIME, default=1): int,
+                vol.Optional(CONF_DEPARTURES_LINES, default=[]): [str],
+                vol.Optional(CONF_DEPARTURES_DIRECTIONS): [str],
                 **TRANSPORT_TYPES_SCHEMA,
             }
         ]
@@ -66,8 +70,12 @@ class TransportSensor(SensorEntity):
         self.hass: HomeAssistant = hass
         self.config: dict = config
         self.station_name: str = config.get(CONF_DEPARTURES_NAME)
-        self.walking_time: int = config.get(CONF_DEPARTURES_WALKING_TIME) or 1
         # we add +1 minute anyway to delete the "just gone" transport
+        self.walking_time: int = config.get(CONF_DEPARTURES_WALKING_TIME) or 1
+        # If configured allow only the specified line, else allow all lines
+        self.lines: str = config.get(CONF_DEPARTURES_LINES) or []
+        # If configured allow only the specified directions, else allow all directions
+        self.directions: str = config.get(CONF_DEPARTURES_DIRECTIONS) or None
 
     @property
     def name(self) -> str:
@@ -88,7 +96,7 @@ class TransportSensor(SensorEntity):
     def state(self) -> str:
         next_departure = self.next_departure()
         if next_departure:
-            return f"Next {next_departure.line_name} at {next_departure.time}"
+                return f"Next {next_departure.line_name}, {next_departure.direction} at {next_departure.time}"
         return "N/A"
 
     @property
@@ -111,16 +119,27 @@ class TransportSensor(SensorEntity):
 
         mvg_api = MvgApi(station['id'])
         departures = mvg_api.departures(
-            limit=20,
+            limit=30,
             offset=self.walking_time,
         )
         departures = list(filter(lambda d: not bool(d['cancelled']), departures))
 
         _LOGGER.debug(f"OK: departures for {station['name']}: {departures}")
 
-        # convert api data into objects
+        # Convert API data into objects
         unsorted = [Departure.from_dict(departure) for departure in departures]
-        return sorted(unsorted, key=lambda d: d.timestamp)
+
+        # Filter departures based on line and direction
+        filtered_departures = []
+        for departure in unsorted:
+            if (
+                (not self.lines or departure.line_name in self.lines) and
+                (not self.directions or departure.direction in self.directions)
+            ):
+                filtered_departures.append(departure)
+
+        return sorted(filtered_departures, key=lambda d: d.timestamp)
+
 
     def next_departure(self):
         if self.departures and isinstance(self.departures, list):
